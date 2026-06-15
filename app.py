@@ -533,7 +533,7 @@ def load_credentials():
                     k, v = s.split("=", 1)
                     creds[k.strip()] = v.strip().strip('"').strip("'")
     if not creds:
-        creds = {"analyst": "findevil2024"}
+        creds = {"analyst": "evil"}
     return {str(k): str(v) for k, v in creds.items()}
 
 
@@ -1172,10 +1172,9 @@ def page_logs():
         return
     tools = res["tools"]
     df = pd.DataFrame(tools) if tools else pd.DataFrame(columns=["Tool", "Command / Input"])
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.metric("Tool calls", len(df))
     c2.metric("Wall time", f"{round(res['elapsed'])}s")
-    c3.metric("Output tokens", res.get("usage", {}).get("output_tokens", "-"))
     if tools and HAS_PLOTLY:
         vc = df["Tool"].value_counts()
         fig = go.Figure(go.Bar(x=list(vc.index), y=list(vc.values), marker_color="#38bdf8",
