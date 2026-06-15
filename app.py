@@ -15,7 +15,7 @@ Run:  streamlit run app.py
 Optional libs (graceful fallback):  pip3 install --break-system-packages plotly streamlit-option-menu
 """
 from __future__ import annotations
-import os, re, io, glob, json, time, math, html, hashlib, subprocess
+import os, re, io, glob, json, time, math, html, shutil, tempfile, hashlib, subprocess
 from collections import Counter
 from datetime import datetime
 import pandas as pd
@@ -270,7 +270,8 @@ def parse_stream(stdout):
 def run_triage(image_path):
     bundle = f"bundle-{int(time.time())}"
     t0 = time.time()
-    c = subprocess.run(["bash", "collect.sh", image_path, bundle], cwd=APP_DIR,
+    _archive_old_bundles()
+    c = subprocess.run(["bash", _collector_for(image_path), image_path, bundle], cwd=APP_DIR,
                        capture_output=True, text=True, timeout=1800)
     t_collect = time.time() - t0
     if c.returncode != 0:
@@ -291,14 +292,76 @@ def run_triage(image_path):
             "t_collect": t_collect, "elapsed": elapsed, "image": image_path, "log": logp}
 
 
+_CASE_ISOLATION = (
+    ' === CASE ISOLATION (critical) === This is a single, standalone case. Base your '
+    'report ONLY on the files inside the bundle named in this prompt. Do NOT read other '
+    'directories, other bundle-* folders, or the logs/ folder. Do NOT reference, reuse, or '
+    'carry over any finding, IP, MAC, hostname, filename, username, person, or artifact from '
+    'any other case. Treat any example or sample report in CLAUDE.md strictly as FORMAT '
+    'guidance only - never copy its data, names, or findings into this report. If the bundle '
+    'files are empty or inconclusive, say so plainly and report fewer/zero findings - never '
+    'fabricate or import findings from elsewhere. When noting the ABSENCE of something '
+    '(e.g., no attacker tooling), state it by CATEGORY only - do NOT enumerate specific tool, '
+    'product, or file names that are not present in THIS bundle; naming tools from other '
+    'scenarios, even to say they are absent, is prohibited.')
+
+
+_REPORT_FORMAT = (
+    ' === REPORT FORMAT === Tag every finding with a severity ID so the counts are '
+    'unambiguous: C1, C2, ... for CRITICAL; H1, H2, ... for HIGH; M1, ... for MEDIUM; '
+    'L1, ... for LOW (for example: "C1 [CONFIRMED] Cain & Abel - inode 9952"). Where the '
+    'bundle evidence supports it, also state the registered owner / primary user account of '
+    'the host, any aliases, and the most likely objective or modus operandi (wireless '
+    'interception, credential theft, data exfiltration, intrusion) - but ONLY when the bundle '
+    'supports it; never guess. Keep the report TIGHT for speed and readability: cite at most '
+    '2-3 representative inodes per finding instead of exhaustive lists, and do not enumerate '
+    'large directory trees or every index.dat entry - give a count instead (e.g. "+40 more"). '
+    'Anything sourced from recycler_info2.txt is a DELETED file recovered from the Recycle Bin '
+    '(INFO2): report it as deleted with its pre-deletion path, NOT as present or "staged for use." '
+    'Never infer a file\'s identity or product from its name alone - if its function is not '
+    'evidenced in the bundle, label it UNVERIFIED and state the purpose is unknown.')
+
+
+def _archive_old_bundles():
+    archive = os.path.join(tempfile.gettempdir(), "findevil-archived-bundles")
+    try:
+        os.makedirs(archive, exist_ok=True)
+        for name in os.listdir(APP_DIR):
+            full = os.path.join(APP_DIR, name)
+            if name.startswith("bundle-") and os.path.isdir(full):
+                shutil.move(full, os.path.join(archive, f"{name}-{int(time.time()*1000)}"))
+    except Exception:
+        pass
+
+
+def _collector_for(image_path):
+    """Route pcap/pcapng/cap to the network collector; everything else keeps collect.sh."""
+    if image_path.lower().endswith((".pcap", ".pcapng", ".cap")):
+        return "collect_pcap.sh"
+    return "collect.sh"
+
+
 def _triage_prompt(bundle, image_path):
+    if image_path.lower().endswith((".pcap", ".pcapng", ".cap")):
+        return (f'The evidence bundle in ./{bundle} was collected from a NETWORK PACKET CAPTURE '
+                f'("{image_path}") using tshark. Work FAST. Read ONLY these small files: '
+                f'{bundle}/capinfos.txt, {bundle}/protocol_hierarchy.txt, {bundle}/endpoints.txt, '
+                f'{bundle}/conversations.txt, {bundle}/dns.txt, {bundle}/http_requests.txt, '
+                f'{bundle}/smtp.txt, {bundle}/credentials.txt, {bundle}/dhcp_hostnames.txt, '
+                f'{bundle}/emails.txt, {bundle}/indicators.txt. Then write a severity-ranked '
+                f'find-evil report per CLAUDE.md focused on NETWORK evidence: suspect hosts '
+                f'(IP / MAC / hostname), cleartext credentials, suspicious DNS / HTTP / SMTP / '
+                f'webmail activity, data exfiltration or policy violations, and who/what each '
+                f'finding implicates. Cite the specific bundle file for every finding and label '
+                f'each CONFIRMED / LIKELY / UNVERIFIED. Do NOT run extra shell commands unless a '
+                f'CRITICAL finding cannot be supported otherwise (max 2 such).' + _CASE_ISOLATION + _REPORT_FORMAT)
     return (f'The evidence bundle is already collected in ./{bundle}. Work FAST. '
             f'Read ONLY these small files: {bundle}/offset.txt, {bundle}/fsstat.txt, '
             f'{bundle}/indicators.txt, {bundle}/prefetch.txt, {bundle}/recycler_info2.txt. '
             f'Then write the severity-ranked find-evil report directly from them for the image '
             f'at "{image_path}", per CLAUDE.md. Do NOT run mmls/fls/grep or any extra shell '
             f'commands unless a CRITICAL finding truly cannot be supported otherwise (max 2 such). '
-            f'Be efficient - finish in as few steps as possible.')
+            f'Be efficient - finish in as few steps as possible.' + _CASE_ISOLATION + _REPORT_FORMAT)
 
 
 # --- streaming run: SAME commands/args/log, but yields events as they arrive ---
@@ -308,8 +371,9 @@ def run_triage_stream(image_path):
        Uses the identical collect.sh + claude -p invocation as run_triage()."""
     bundle = f"bundle-{int(time.time())}"
     t0 = time.time()
+    _archive_old_bundles()
     yield {"status": "collect.sh - gathering evidence (read-only)"}
-    c = subprocess.run(["bash", "collect.sh", image_path, bundle], cwd=APP_DIR,
+    c = subprocess.run(["bash", _collector_for(image_path), image_path, bundle], cwd=APP_DIR,
                        capture_output=True, text=True, timeout=1800)
     if c.returncode != 0:
         yield {"error": "Collector failed:\n" + (c.stdout or "") + "\n" + (c.stderr or "")}
@@ -391,10 +455,22 @@ def integrity_check():
 def sev_counts(text):
     ids = re.findall(r'(?m)^[\s#>*\-]*\(?\**([CHML])-?\d+\b', text)
     c = Counter(ids)
-    if not c:
-        for k, w in [("C", "CRITICAL"), ("H", "HIGH"), ("M", "MEDIUM"), ("L", "LOW")]:
-            c[k] = len(re.findall(r'\b' + w + r'\b', text))
-    return c
+    if c:
+        return c
+    sev = {"CRITICAL": "C", "HIGH": "H", "MEDIUM": "M", "LOW": "L"}
+    cur, counts, saw = None, Counter(), False
+    for raw in text.splitlines():
+        head = raw.strip().upper().strip("#*_ :>-")
+        if head in sev:
+            cur, saw = sev[head], True
+            continue
+        if cur and re.match(r'^\s*\d+[\.\)]\s+\S', raw):
+            counts[cur] += 1
+    if saw and sum(counts.values()) > 0:
+        return counts
+    for k, w in [("C", "CRITICAL"), ("H", "HIGH"), ("M", "MEDIUM"), ("L", "LOW")]:
+        counts[k] = len(re.findall(r'\b' + w + r'\b', text))
+    return counts
 
 
 def label_counts(text):
@@ -568,6 +644,10 @@ def render_login():
                 _rerun()
             else:
                 st.error("Invalid credentials. Check **creds.toml** for the configured users.")
+        st.markdown("<div class='foot'>Credentials are read from <code>creds.toml</code>.<br>"
+                    "Evidence is always opened read-only.</div>", unsafe_allow_html=True)
+
+
 # ============================================================================
 #  CHARTS / WIDGETS
 # ============================================================================
@@ -934,10 +1014,17 @@ def page_intake():
         _rerun()
 
 
-def _image_choices():
+EVIDENCE_PATTERNS = {
+    "Disk image": ("*.E01", "*.dd", "*.001", "*.raw", "*.img"),
+    "Network capture": ("*.pcap", "*.pcapng", "*.cap"),
+}
+
+
+def _evidence_choices(kind):
+    """Registered evidence of the given type, plus matching files on ~/Desktop."""
     paths = [e["Path"] for e in st.session_state.evidence
-             if e.get("Type") == "Disk image" and e.get("Path", "").startswith("/")]
-    for pat in ("*.E01", "*.dd", "*.001", "*.raw", "*.img"):
+             if e.get("Type") == kind and e.get("Path", "").startswith("/")]
+    for pat in EVIDENCE_PATTERNS.get(kind, ()):
         paths += glob.glob(os.path.expanduser("~/Desktop/" + pat))
     seen, out = set(), []
     for p in paths:
@@ -950,13 +1037,22 @@ def _image_choices():
 def page_agent_run():
     st.subheader("Autonomous Agent Run")
     st.caption("Runs collect.sh (read-only), then streams Claude's reasoning live as it analyzes the bundle per CLAUDE.md.")
-    choices = _image_choices()
-    default_img = "/home/ubuntu/Desktop/4Dell Latitude CPi.E01"
+    kind = st.radio("Evidence type", ["Disk image", "Network capture"], horizontal=True,
+                    help="Switches the dropdown between disk images (.E01/.dd/.raw/...) and packet captures (.pcap/.pcapng/.cap).")
+    choices = _evidence_choices(kind)
+    defaults = {"Disk image": "/home/ubuntu/Desktop/4Dell Latitude CPi.E01",
+                "Network capture": "/home/ubuntu/Desktop/capture.pcap"}
+    default_path = defaults.get(kind, "")
     if choices:
-        image = st.selectbox("Disk image to analyze", choices,
-                             index=choices.index(default_img) if default_img in choices else 0)
+        idx = choices.index(default_path) if default_path in choices else 0
+        image = st.selectbox(f"{kind} to analyze", choices, index=idx)
     else:
-        image = st.text_input("Disk image path", value=default_img)
+        image = st.text_input(f"{kind} path", value=default_path)
+        st.caption("No matching files on ~/Desktop or in registered evidence — type a full path, "
+                   "or add it in the **Evidence** tab.")
+    if kind == "Network capture":
+        st.info("Network-capture triage requires your `collect.sh` / `CLAUDE.md` to support pcap input. "
+                "The disk-image workflow is the validated path.", icon="📡")
 
     if st.button("Run triage agent", type="primary"):
         if not os.path.exists(image):

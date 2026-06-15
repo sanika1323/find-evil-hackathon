@@ -1,0 +1,20 @@
+# Find Evil! - login credentials
+# ---------------------------------------------------------------------------
+# Each entry under [credentials] is:   username = "password"
+#
+# Passwords may be stored two ways:
+#   1) plaintext          ->  analyst = "findevil2024"
+#   2) sha256 hash        ->  admin   = "sha256:<hexdigest>"
+#
+# To create a hash:
+#   python3 -c "import hashlib;print('sha256:'+hashlib.sha256(b'YOURPASS').hexdigest())"
+#
+# Keep this file out of screenshots/demos. Delete the file to fall back to the
+# built-in default user (analyst / findevil2024).
+# ---------------------------------------------------------------------------
+
+[credentials]
+analyst = "findevil2024"
+admin   = "sha256:8b2c86ea9cf2ea4eb517fd1e06b74f399e7fec0fef92e3b482a6cf2e2b092023"
+# ^ the 'admin' hash above is a placeholder. Replace it with your own using the
+#   command in the comment so you control the password.
